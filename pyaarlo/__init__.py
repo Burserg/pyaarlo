@@ -214,11 +214,12 @@ class PyArlo(object):
             self._refresh_locations()
         self._refresh_devices()
 
+        valid_device_states = VALID_DEVICE_STATES + self._cfg.extra_device_states
         for device in self._devices:
             dname = device.get("deviceName")
             dtype = device.get("deviceType")
             device_state = device.get("state", "unknown").lower()
-            if device_state not in VALID_DEVICE_STATES:
+            if device_state not in valid_device_states:
                 self.info(f"skipping {dname}: state is {device_state}")
                 continue
 

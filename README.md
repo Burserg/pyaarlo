@@ -384,6 +384,12 @@ the top and work down:
   value is minutes and a good starting point is 90.
 * `request_timeout`, the amount of time to allow for a http request to work. A
   good starting point is 120 seconds.
+* `extra_device_states`, a list of additional device `state` values to accept on
+  top of the built-in `provisioned`/`synced`. Use this if a working camera is
+  missing because the legacy device API reports it with another state (for
+  example `deactivated` after a remove/re-add in the new Arlo app). Accepts a
+  single string or a list, e.g. `extra_device_states=["deactivated"]`. Matching
+  is case-insensitive. Leave unset to keep the default behaviour.
 
 Alro will allow shared accounts to give cameras their own name. If you find
 cameras appearing with unexpected names (or not appearing at all), log into the
