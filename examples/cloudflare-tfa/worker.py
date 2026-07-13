@@ -102,28 +102,38 @@ class Default(WorkerEntrypoint):
             headers={"Content-Type": "application/json"},
         )
 
-    async def email(self, message):
+    # env/ctx are optional because the invocation differs by runtime version:
+    # deployed workers call email(message, env, ctx), wrangler dev calls
+    # email(message).
+    async def email(self, message, env=None, ctx=None):
         # Email Routing has already run SPF/DKIM/DMARC checks; this is
         # defense in depth. `message.from` is a Python keyword, so read
         # the header instead.
-        if not sender_allowed(msg_field(message, "headers").get("from")):
+        sender = msg_field(message, "headers").get("from")
+        if not sender_allowed(sender):
+            print(f"tfa: dropped email from {sender}")
             return
 
         raw = await JsResponse.new(msg_field(message, "raw")).arrayBuffer()
         code = extract_code(raw.to_bytes())
         if code is None:
+            print("tfa: no code found in email")
             return
 
+        kv = env.TFA_CODES if env is not None else self.env.TFA_CODES
         record = json.dumps({"code": code, "timestamp": int(time.time())})
-        await self.env.TFA_CODES.put(
+        await kv.put(
             kv_key(msg_field(message, "to")),
             record,
             _to_js({"expirationTtl": CODE_TTL}, dict_converter=Object.fromEntries),
         )
+        print(f"tfa: stored code for {msg_field(message, 'to')}")
 
-    async def fetch(self, request):
+    async def fetch(self, request, env=None, ctx=None):
+        if env is None:
+            env = self.env
         token = request.headers.get("Authorization") or ""
-        if not hmac.compare_digest(token, f"Bearer {self.env.TFA_TOKEN}"):
+        if not hmac.compare_digest(token, f"Bearer {env.TFA_TOKEN}"):
             return self._json(_envelope(403, "forbidden"), status=403)
 
         url = urlparse(request.url)
@@ -132,13 +142,13 @@ class Default(WorkerEntrypoint):
             return self._json(_envelope(400, "email required"), status=400)
 
         if url.path == "/get" and request.method == "GET":
-            value = await self.env.TFA_CODES.get(kv_key(address))
+            value = await env.TFA_CODES.get(kv_key(address))
             data = json.loads(value) if value else {}
             return self._json(_envelope(data=data))
 
         # GET kept alongside POST to make curl debugging easy.
         if url.path == "/clear" and request.method in ("GET", "POST"):
-            await self.env.TFA_CODES.delete(kv_key(address))
+            await env.TFA_CODES.delete(kv_key(address))
             return self._json(_envelope())
 
         return self._json(_envelope(404, "not found"), status=404)
