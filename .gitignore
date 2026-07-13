@@ -116,3 +116,7 @@ docs/out
 bugs/
 videos/
 logs/
+
+# Cloudflare worker dev artifacts
+.dev.vars
+.wrangler/

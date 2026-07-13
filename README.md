@@ -23,6 +23,7 @@ create an issue.
 - [2 Factor Authentication](#2fa)
   * [Manual](#2fa-manual)
   * [IMAP](#2fa-imap)
+  * [Cloudflare Email Worker](#2fa-cloudflare)
 - [Error Reporting](#errors)
 - [Limitations](#limitations)
 - [Other 2 Factor Authentication](#2fa-other)
@@ -292,6 +293,33 @@ ar = pyaarlo.PyArlo(username=USERNAME, password=PASSWORD,
                     tfa_username='your-user-name',
                     tfa_password='your-imap-password' )
 ```
+
+<a name="2fa-cloudflare"></a>
+#### Cloudflare Email Worker
+
+A self-hosted alternative to IMAP that needs no mail provider credentials. A
+Cloudflare Email Routing rule delivers the Arlo 2FA email to a small Python
+Worker running on your Cloudflare account; the worker extracts the code and
+Pyaarlo collects it from the worker over HTTPS during login. See
+[examples/cloudflare-tfa](examples/cloudflare-tfa/README.md) for the worker
+and deployment instructions.
+
+```python
+ar = pyaarlo.PyArlo(username=USERNAME, password=PASSWORD,
+                    tfa_source='cloudflare', tfa_type='email',
+                    tfa_host='pyaarlo-tfa.your-account.workers.dev',
+                    tfa_username='arlo-tfa@yourdomain.com',
+                    tfa_password='your-worker-bearer-token',
+                    tfa_total_timeout=120 )
+```
+
+Here `tfa_host` is the worker URL, `tfa_username` is the email address the
+routing rule listens on (your Arlo account's email 2FA factor) and
+`tfa_password` is the worker's `TFA_TOKEN` secret — not your Arlo password.
+Both `tfa_host` and `tfa_password` must be set explicitly or the source
+refuses to start. Raising `tfa_total_timeout` to 120 is recommended: the
+worker stores codes in Cloudflare KV, which can take up to a minute to
+propagate between locations.
 
 
 <a name="executable"></a>

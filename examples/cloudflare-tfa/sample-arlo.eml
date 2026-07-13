@@ -1,0 +1,26 @@
+From: "Arlo" <do_not_reply@arlo.com>
+To: arlo-tfa@yourdomain.com
+Subject: Your one-time authentication code
+Message-ID: <sample-0001@arlo.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="sample-boundary"
+
+--sample-boundary
+Content-Type: text/plain; charset="utf-8"
+
+Your Arlo one-time authentication code is:
+
+123456
+
+This code expires in 15 minutes.
+
+--sample-boundary
+Content-Type: text/html; charset="utf-8"
+
+<html><body>
+<p>Your Arlo one-time authentication code is:</p>
+<p>123456</p>
+<p>This code expires in 15 minutes.</p>
+</body></html>
+
+--sample-boundary--

@@ -242,3 +242,98 @@ class Arlo2FARestAPI:
 
     def debug(self, msg):
         self._arlo.debug(f"2fa-rest-api: {msg}")
+
+
+class Arlo2FACloudflare:
+    """2FA authentication via a self hosted Cloudflare email worker.
+    Polls the worker until the code arrives by email.
+
+    See examples/cloudflare-tfa for the worker and setup instructions.
+    """
+
+    def __init__(self, arlo):
+        self._arlo = arlo
+
+    def _base_url(self):
+        return self._arlo.cfg.tfa_host_with_scheme("https")
+
+    def _headers(self):
+        return {"Authorization": f"Bearer {self._arlo.cfg.tfa_password}"}
+
+    def _params(self):
+        return {"email": self._arlo.cfg.tfa_username}
+
+    def start(self):
+        self.debug("starting")
+
+        # Fail closed on missing config. We can't rely on the cfg fallbacks
+        # here: they would quietly send the real Arlo password as the bearer
+        # token to the default rest-api host.
+        if self._arlo.cfg._kw.get("tfa_host") is None or self._arlo.cfg._kw.get("tfa_password") is None:
+            self._arlo.error(
+                "cloudflare 2fa needs tfa_host (worker url) and tfa_password (worker token) set explicitly"
+            )
+            return False
+
+        self.debug("clearing")
+        try:
+            response = requests.post(
+                f"{self._base_url()}/clear",
+                params=self._params(),
+                headers=self._headers(),
+                timeout=10,
+            )
+            if response.status_code != 200:
+                self.debug("possible problem clearing")
+        except Exception as e:
+            self._arlo.error(f"cloudflare 2fa clear failed: {e}")
+            return False
+
+        return True
+
+    def get(self):
+        self.debug("checking")
+
+        # give tfa_total_timeout seconds for email to arrive
+        start = time.time()
+        while True:
+
+            # wait a short while, stop after a total timeout
+            # ok to do on first run gives email time to arrive
+            time.sleep(self._arlo.cfg.tfa_timeout)
+            if time.time() > (start + self._arlo.cfg.tfa_total_timeout):
+                return None
+
+            # Try for the code.
+            self.debug("checking")
+            try:
+                response = requests.get(
+                    f"{self._base_url()}/get",
+                    params=self._params(),
+                    headers=self._headers(),
+                    timeout=10,
+                )
+                if response.status_code == 200:
+                    code = response.json().get("data", {}).get("code", None)
+                    if code is not None:
+                        self.debug(f"code={code}")
+                        return code
+            except Exception as e:
+                self._arlo.warning(f"cloudflare 2fa check failed: {e}")
+
+            self.debug("retrying")
+
+    def stop(self):
+        self.debug("stopping")
+        try:
+            requests.post(
+                f"{self._base_url()}/clear",
+                params=self._params(),
+                headers=self._headers(),
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def debug(self, msg):
+        self._arlo.debug(f"2fa-cloudflare: {msg}")

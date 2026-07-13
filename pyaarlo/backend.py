@@ -37,6 +37,7 @@ from .constant import (
     REFERER_HOST,
     SESSION_PATH,
     SUBSCRIBE_PATH,
+    TFA_CLOUDFLARE_SOURCE,
     TFA_CONSOLE_SOURCE,
     TFA_IMAP_SOURCE,
     TFA_PUSH_SOURCE,
@@ -45,7 +46,7 @@ from .constant import (
     USER_AGENTS,
 )
 from .sseclient import SSEClient
-from .tfa import Arlo2FAConsole, Arlo2FAImap, Arlo2FARestAPI
+from .tfa import Arlo2FACloudflare, Arlo2FAConsole, Arlo2FAImap, Arlo2FARestAPI
 from .util import days_until, now_strftime, time_to_arlotime, to_b64
 
 
@@ -744,6 +745,8 @@ class ArloBackEnd(object):
             return Arlo2FAImap(self._arlo)
         elif tfa_type == TFA_REST_API_SOURCE:
             return Arlo2FARestAPI(self._arlo)
+        elif tfa_type == TFA_CLOUDFLARE_SOURCE:
+            return Arlo2FACloudflare(self._arlo)
         else:
             return tfa_type
 

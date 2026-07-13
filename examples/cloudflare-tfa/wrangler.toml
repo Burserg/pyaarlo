@@ -1,0 +1,10 @@
+name = "pyaarlo-tfa"
+main = "worker.py"
+compatibility_date = "2026-06-01"
+# disable_python_external_sdk uses the runtime's built-in `workers` module so
+# plain `npx wrangler` works without the workers-py/pywrangler toolchain.
+compatibility_flags = ["python_workers", "disable_python_external_sdk"]
+
+[[kv_namespaces]]
+binding = "TFA_CODES"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
