@@ -113,6 +113,15 @@ class ArloMediaDownloader(threading.Thread):
                 self._lock.acquire()
 
                 self._downloading = False
+                remaining = len(self._queue)
+                if media is not None:
+                    if result == 1:
+                        self._arlo.info(
+                            f"media-downloader: saved video for {media.camera.name} "
+                            f"({remaining} remaining)"
+                        )
+                    elif remaining == 0:
+                        self._arlo.info("media-downloader: download queue empty")
                 # Nothing else to do then just wait.
                 if len(self._queue) == 0:
                     self.vdebug(f"waiting for media")
@@ -225,6 +234,8 @@ class ArloMediaLibrary(object):
         # cut-off are saved before they expire
         for video in sorted(videos, key=lambda v: v.created_at or 0):
             self._downloader.queue_download(video)
+        if videos and self._arlo.cfg.save_media_to:
+            self._arlo.info(f"media: queued {len(videos)} new videos for download")
 
         # note changes and run callbacks
         with self._lock:
@@ -297,6 +308,8 @@ class ArloMediaLibrary(object):
         # cut-off are saved before they expire
         for video in sorted(videos, key=lambda v: v.created_at or 0):
             self._downloader.queue_download(video)
+        if videos and self._arlo.cfg.save_media_to:
+            self._arlo.info(f"media: queued {len(videos)} videos for download")
 
         # set update count, load() never runs callbacks
         with self._lock:
