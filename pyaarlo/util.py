@@ -1,8 +1,36 @@
 import base64
+import threading
 import time
 from datetime import datetime, timezone
 
 import requests
+
+
+class BandwidthLimiter:
+    """Token bucket rate limiter shared across download threads.
+
+    Callers report transferred bytes with `throttle()` which sleeps as
+    needed to hold the aggregate transfer to `rate` bytes per second.
+    Allows up to one second of burst.
+    """
+
+    def __init__(self, rate):
+        self._rate = float(rate)
+        self._tokens = self._rate
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def throttle(self, nbytes):
+        with self._lock:
+            now = time.monotonic()
+            self._tokens = min(
+                self._rate, self._tokens + (now - self._last) * self._rate
+            )
+            self._last = now
+            self._tokens -= nbytes
+            wait = -self._tokens / self._rate if self._tokens < 0 else 0.0
+        if wait > 0:
+            time.sleep(wait)
 
 
 def utc_to_local(utc_dt):
@@ -107,6 +135,31 @@ def http_get_img(url, ignore_date=False):
         date = datetime.now().astimezone()
 
     return ret.content, date
+
+
+def http_download(url, filename, limiter=None, chunk=65536):
+    """Stream a URL to a file, optionally holding to a bandwidth limit.
+
+    :param url: url to download
+    :param filename: where to write the data
+    :param limiter: optional BandwidthLimiter shared with other downloads
+    :param chunk: bytes to read per iteration
+    :return: True on success, False otherwise
+    """
+    if url is None:
+        return False
+    try:
+        with requests.get(url, stream=True, timeout=(10, 60)) as ret:
+            if ret.status_code != 200:
+                return False
+            with open(filename, "wb") as data:
+                for piece in ret.iter_content(chunk):
+                    data.write(piece)
+                    if limiter is not None:
+                        limiter.throttle(len(piece))
+    except Exception:
+        return False
+    return True
 
 
 def http_stream(url, chunk=4096):

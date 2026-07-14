@@ -88,6 +88,11 @@ class PyArlo(object):
     * **synchronous_mode** - Wait for operations to complete before returing. If you are coming from Pyarlo this
       will make Pyaarlo behave more like you expect.
     * **save_media_to** - Save media to a local directory.
+    * **media_download_workers** - How many videos to download concurrently. Default `1`.
+    * **media_download_rate_limit** - Total download bandwidth limit in KB/s, shared by all download
+      workers. Default `0`, meaning no limit.
+    * **media_recheck_every** - Time, in minutes, between full media library rescans. Rescans pick up
+      recordings missed while offline or logged out. Default `0`, meaning no rescans.
 
     **Debug `kwargs` parameters:**
 
@@ -323,6 +328,8 @@ class PyArlo(object):
         self.debug("registering cron jobs")
         self._bg.run_every(self._fast_refresh, FAST_REFRESH_INTERVAL)
         self._bg.run_every(self._slow_refresh, SLOW_REFRESH_INTERVAL)
+        if self._cfg.media_recheck_every != 0:
+            self._bg.run_every(self._ml.load, self._cfg.media_recheck_every)
 
         # Wait for initial refresh
         if self._cfg.wait_for_initial_setup:

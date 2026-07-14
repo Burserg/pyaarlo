@@ -322,6 +322,21 @@ class ArloCfg(object):
         return self._kw.get("save_media_to", "")
 
     @property
+    def media_download_workers(self):
+        """How many videos to download concurrently."""
+        return self._kw.get("media_download_workers", 1)
+
+    @property
+    def media_download_rate_limit(self):
+        """Total download bandwidth limit in KB/s, shared by all workers. 0 disables."""
+        return self._kw.get("media_download_rate_limit", 0)
+
+    @property
+    def media_recheck_every(self):
+        """Minutes between full library rescans, in seconds. 0 disables."""
+        return self._kw.get("media_recheck_every", 0) * 60
+
+    @property
     def no_unicode_squash(self):
         return self._kw.get("no_unicode_squash", True)
 

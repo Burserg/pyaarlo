@@ -10,21 +10,41 @@ from .constant import (
     RATLS_DOWNLOAD_PATH,
     VIDEO_CONTENT_TYPES
 )
-from .util import arlotime_strftime, arlotime_to_datetime, http_get, http_stream
+from .util import (
+    BandwidthLimiter,
+    arlotime_strftime,
+    arlotime_to_datetime,
+    http_download,
+    http_get,
+    http_stream,
+)
 
 # How many times to try downloading a video before giving up on it.
 DOWNLOAD_ATTEMPTS = 3
 
 
-class ArloMediaDownloader(threading.Thread):
+class ArloMediaDownloader:
+    """Downloads queued media on a pool of worker threads.
+
+    Worker count comes from `media_download_workers` and all workers share
+    a `media_download_rate_limit` KB/s bandwidth budget when one is set.
+    """
+
     def __init__(self, arlo, save_format):
-        super().__init__()
         self._arlo = arlo
         self._save_format = save_format
         self._lock = threading.Condition()
         self._queue = []
         self._stopThread = False
-        self._downloading = False
+        self._active = 0
+        self._workers = []
+        self._inflight = set()
+        self._limiter = None
+        rate_limit = self._arlo.cfg.media_download_rate_limit
+        if rate_limit > 0:
+            self._limiter = BandwidthLimiter(rate_limit * 1024)
+        self.name = "ArloMediaDownloader"
+        self.daemon = True
 
     # noinspection PyPep8Naming
     def _output_name(self, media):
@@ -74,13 +94,20 @@ class ArloMediaDownloader(threading.Thread):
 
         :param media: ArloMediaObject to download
         :return: 1 if a file was downloaded, 0 if the file present and skipped,
-            -1 if the download failed and is worth retrying or -2 if it can
-            never succeed
+            -1 if the download failed and is worth retrying, -2 if it can
+            never succeed or -3 if another worker is writing the same file
         """
         # Calculate name.
         save_file = self._output_name(media)
         if save_file is None:
             return -2
+
+        # Reserve the output path so two workers can't write the same file.
+        with self._lock:
+            if save_file in self._inflight:
+                return -3
+            self._inflight.add(save_file)
+
         try:
             # See if it exists.
             os.makedirs(os.path.dirname(save_file), exist_ok=True)
@@ -88,7 +115,7 @@ class ArloMediaDownloader(threading.Thread):
                 # Download to temporary file before renaming it.
                 self.debug(f"dowloading for {media.camera.name} --> {save_file}")
                 save_file_tmp = f"{save_file}.tmp"
-                if not media.download_video(save_file_tmp):
+                if not media.download_video(save_file_tmp, limiter=self._limiter):
                     if os.path.exists(save_file_tmp):
                         os.remove(save_file_tmp)
                     self._arlo.error(f"failed to download: {save_file}")
@@ -103,25 +130,54 @@ class ArloMediaDownloader(threading.Thread):
         except OSError as _e:
             self._arlo.error(f"failed to download: {save_file}")
             return -1
+        finally:
+            with self._lock:
+                self._inflight.discard(save_file)
 
-    def run(self):
+    def start(self):
         if self._save_format == "":
             self.debug("not starting downloader")
             return
+        self._stopThread = False
+        workers = max(1, int(self._arlo.cfg.media_download_workers))
+        if self._limiter is not None:
+            self.debug(
+                f"limiting downloads to {self._arlo.cfg.media_download_rate_limit} KB/s"
+            )
+        for worker_no in range(workers):
+            worker = threading.Thread(
+                target=self._work, name=f"{self.name}-{worker_no}", daemon=True
+            )
+            self._workers.append(worker)
+            worker.start()
+
+    def _work(self):
         with self._lock:
             while not self._stopThread:
                 media = None
                 result = 0
                 if len(self._queue) > 0:
                     media = self._queue.pop(0)
-                    self._downloading = True
+                    self._active += 1
 
                 self._lock.release()
-                if media is not None:
-                    result = self._download(media)
-                self._lock.acquire()
+                try:
+                    if media is not None:
+                        result = self._download(media)
+                except Exception as e:
+                    # _download only expects OSError; anything else must not
+                    # kill the worker. Treat it as retryable.
+                    self._arlo.error(f"media-downloader: unexpected error: {e}")
+                    result = -1
+                finally:
+                    self._lock.acquire()
 
-                self._downloading = False
+                if media is not None:
+                    self._active -= 1
+                if media is not None and result == -3:
+                    # Another worker is writing the same file; try it again
+                    # shortly, it will usually resolve to a skip.
+                    self._queue.append(media)
                 if media is not None and result == -1:
                     # Failed but might succeed later; re-queue it unless it
                     # has already used up its attempts. We hold the lock so
@@ -146,7 +202,7 @@ class ArloMediaDownloader(threading.Thread):
                             f"media-downloader: saved video for {media.camera.name} "
                             f"({remaining} remaining)"
                         )
-                    elif remaining == 0:
+                    elif remaining == 0 and self._active == 0:
                         self._arlo.info("media-downloader: download queue empty")
                 # Nothing else to do then just wait.
                 if len(self._queue) == 0:
@@ -158,27 +214,28 @@ class ArloMediaDownloader(threading.Thread):
                 # Space out retries so a failing download doesn't spin.
                 elif result == -1:
                     self._lock.wait(5.0)
+                elif result == -3:
+                    self._lock.wait(1.0)
 
     def queue_download(self, media):
         if self._save_format == "":
             return
         with self._lock:
             self._queue.append(media)
-            if len(self._queue) == 1:
-                self._lock.notify()
+            self._lock.notify_all()
 
     def stop(self):
-        if self._save_format == "":
-            return
         with self._lock:
             self._stopThread = True
-            self._lock.notify()
-        self.join(10)
+            self._lock.notify_all()
+        for worker in self._workers:
+            worker.join(10)
+        self._workers = []
 
     @property
     def processing(self):
         with self._lock:
-            return len(self._queue) > 0 or self._downloading
+            return len(self._queue) > 0 or self._active > 0
 
     def debug(self, msg):
         self._arlo.debug(f"media-downloader: {msg}")
@@ -285,16 +342,25 @@ class ArloMediaLibrary(object):
         # set beginning and end
         days = self._arlo.cfg.library_days
         now = datetime.today()
-        date_from = (now - timedelta(days=days)).strftime("%Y%m%d")
-        date_to = now.strftime("%Y%m%d")
         self.debug("loading image library ({} days)".format(days))
 
-        # save videos for cameras we know about
-        data = self._fetch_library(date_from, date_to)
-
-        if data is None:
-            self._arlo.warning("error loading the image library")
-            return
+        # Save videos for cameras we know about. Fetch in month sized
+        # chunks; Arlo quietly truncates large date ranges.
+        data = []
+        chunk_start = now - timedelta(days=days)
+        while chunk_start <= now:
+            chunk_end = min(chunk_start + timedelta(days=29), now)
+            chunk = self._fetch_library(
+                chunk_start.strftime("%Y%m%d"), chunk_end.strftime("%Y%m%d")
+            )
+            if chunk is None:
+                self._arlo.warning(
+                    "error loading the image library "
+                    f"({chunk_start.date()} to {chunk_end.date()})"
+                )
+            else:
+                data.extend(chunk)
+            chunk_start = chunk_end + timedelta(days=1)
 
         videos = []
         keys = []
@@ -525,7 +591,7 @@ class ArloVideo(ArloMediaObject):
         """Returns the URL of the video."""
         return self._attrs.get("presignedContentUrl", None)
 
-    def download_video(self, filename=None):
+    def download_video(self, filename=None, limiter=None):
         video_url = self.video_url
 
         if self._base:
@@ -536,13 +602,23 @@ class ArloVideo(ArloMediaObject):
             if response is None:
                 return False
 
-            with open(filename, "wb") as data:
-                data.write(response.read())
+            try:
+                with open(filename, "wb") as data:
+                    while True:
+                        piece = response.read(65536)
+                        if not piece:
+                            break
+                        data.write(piece)
+                        if limiter is not None:
+                            limiter.throttle(len(piece))
+            except Exception:
+                return False
 
             return True
         else:
-
-            return http_get(video_url, filename)
+            if filename is None:
+                return http_get(video_url)
+            return http_download(video_url, filename, limiter=limiter)
 
     @property
     def created_at(self):
