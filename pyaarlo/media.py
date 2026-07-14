@@ -12,6 +12,9 @@ from .constant import (
 )
 from .util import arlotime_strftime, arlotime_to_datetime, http_get, http_stream
 
+# How many times to try downloading a video before giving up on it.
+DOWNLOAD_ATTEMPTS = 3
+
 
 class ArloMediaDownloader(threading.Thread):
     def __init__(self, arlo, save_format):
@@ -70,12 +73,14 @@ class ArloMediaDownloader(threading.Thread):
         """Download a single piece of media.
 
         :param media: ArloMediaObject to download
-        :return: 1 if a file was downloaded, 0 if the file present and skipped or -1 if an error occured
+        :return: 1 if a file was downloaded, 0 if the file present and skipped,
+            -1 if the download failed and is worth retrying or -2 if it can
+            never succeed
         """
         # Calculate name.
         save_file = self._output_name(media)
         if save_file is None:
-            return -1
+            return -2
         try:
             # See if it exists.
             os.makedirs(os.path.dirname(save_file), exist_ok=True)
@@ -83,7 +88,11 @@ class ArloMediaDownloader(threading.Thread):
                 # Download to temporary file before renaming it.
                 self.debug(f"dowloading for {media.camera.name} --> {save_file}")
                 save_file_tmp = f"{save_file}.tmp"
-                media.download_video(save_file_tmp)
+                if not media.download_video(save_file_tmp):
+                    if os.path.exists(save_file_tmp):
+                        os.remove(save_file_tmp)
+                    self._arlo.error(f"failed to download: {save_file}")
+                    return -1
                 os.rename(save_file_tmp, save_file)
                 return 1
             else:
@@ -113,6 +122,23 @@ class ArloMediaDownloader(threading.Thread):
                 self._lock.acquire()
 
                 self._downloading = False
+                if media is not None and result == -1:
+                    # Failed but might succeed later; re-queue it unless it
+                    # has already used up its attempts. We hold the lock so
+                    # append directly rather than calling queue_download().
+                    attempts = getattr(media, "_download_attempts", 0) + 1
+                    if attempts < DOWNLOAD_ATTEMPTS:
+                        media._download_attempts = attempts
+                        self._queue.append(media)
+                        self._arlo.warning(
+                            f"media-downloader: download failed for {media.camera.name}, "
+                            f"re-queued (attempt {attempts} of {DOWNLOAD_ATTEMPTS})"
+                        )
+                    else:
+                        self._arlo.error(
+                            f"media-downloader: giving up on video for {media.camera.name} "
+                            f"after {DOWNLOAD_ATTEMPTS} attempts"
+                        )
                 remaining = len(self._queue)
                 if media is not None:
                     if result == 1:
@@ -129,6 +155,9 @@ class ArloMediaDownloader(threading.Thread):
                 # We downloaded a file so inject a small delay.
                 elif result == 1:
                     self._lock.wait(0.5)
+                # Space out retries so a failing download doesn't spin.
+                elif result == -1:
+                    self._lock.wait(5.0)
 
     def queue_download(self, media):
         if self._save_format == "":
