@@ -219,8 +219,12 @@ class ArloMediaLibrary(object):
                 self.debug(f"adding {key} for {camera.name}")
                 video = ArloVideo(video, camera, self._arlo, self._base)
                 videos.append(video)
-                self._downloader.queue_download(video)
                 keys.append(key)
+
+        # queue oldest first so the recordings closest to Arlo's retention
+        # cut-off are saved before they expire
+        for video in sorted(videos, key=lambda v: v.created_at or 0):
+            self._downloader.queue_download(video)
 
         # note changes and run callbacks
         with self._lock:
@@ -286,9 +290,13 @@ class ArloMediaLibrary(object):
                 self.vdebug(f"adding {key} for {camera.name}")
                 video = ArloVideo(video, camera, self._arlo, self._base)
                 videos.append(video)
-                self._downloader.queue_download(video)
                 keys.append(key)
                 continue
+
+        # queue oldest first so the recordings closest to Arlo's retention
+        # cut-off are saved before they expire
+        for video in sorted(videos, key=lambda v: v.created_at or 0):
+            self._downloader.queue_download(video)
 
         # set update count, load() never runs callbacks
         with self._lock:
