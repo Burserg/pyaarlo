@@ -256,6 +256,7 @@ class ArloMediaLibrary(object):
         self._video_keys = []
         self._snapshots = {}
         self._base = None
+        self._retry_pending = False
 
         self._downloader = ArloMediaDownloader(arlo, self._arlo.cfg.save_media_to)
         self._downloader.name = "ArloMediaDownloader"
@@ -270,6 +271,24 @@ class ArloMediaLibrary(object):
             LIBRARY_PATH, {"dateFrom": date_from, "dateTo": date_to}
         )
 
+    def _retry_load(self):
+        with self._lock:
+            self._retry_pending = False
+        self.load()
+
+    def _schedule_retry(self, seconds=300):
+        """Try a failed library load again shortly.
+
+        Loads can fail when they land during a token refresh (for example
+        a reconnect_every relogin); one deferred retry rides it out.
+        """
+        with self._lock:
+            if self._retry_pending:
+                return
+            self._retry_pending = True
+        self._arlo.info("media: library fetch incomplete, retrying in 5 minutes")
+        self._arlo.bg.run_in(self._retry_load, seconds)
+
     # grab recordings from last day, add to existing library if not there
     def update(self):
         self.debug("updating image library")
@@ -277,6 +296,9 @@ class ArloMediaLibrary(object):
         # grab today's images
         date_to = datetime.today().strftime("%Y%m%d")
         data = self._fetch_library(date_to, date_to)
+        if data is None:
+            self._arlo.warning("error updating the image library")
+            return
 
         # get current videos
         with self._lock:
@@ -339,6 +361,13 @@ class ArloMediaLibrary(object):
 
     def load(self):
 
+        # Don't waste the requests if we know we're logged out; the token
+        # is refreshing (eg reconnect_every), try again shortly.
+        if not self._arlo.is_connected:
+            self._arlo.warning("media: not logged in, deferring library load")
+            self._schedule_retry()
+            return
+
         # set beginning and end
         days = self._arlo.cfg.library_days
         now = datetime.today()
@@ -347,6 +376,7 @@ class ArloMediaLibrary(object):
         # Save videos for cameras we know about. Fetch in month sized
         # chunks; Arlo quietly truncates large date ranges.
         data = []
+        failed_chunks = 0
         chunk_start = now - timedelta(days=days)
         while chunk_start <= now:
             chunk_end = min(chunk_start + timedelta(days=29), now)
@@ -358,9 +388,16 @@ class ArloMediaLibrary(object):
                     "error loading the image library "
                     f"({chunk_start.date()} to {chunk_end.date()})"
                 )
+                failed_chunks += 1
             else:
                 data.extend(chunk)
             chunk_start = chunk_end + timedelta(days=1)
+
+        if failed_chunks:
+            self._schedule_retry()
+            if not data:
+                # Nothing usable came back; keep the current library as is.
+                return
 
         videos = []
         keys = []
